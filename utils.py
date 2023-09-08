@@ -1,5 +1,6 @@
 import cv2
 import einops
+import numpy as np
 import torch
 
 
@@ -9,10 +10,6 @@ def preprocess_state(state):
     state = cv2.resize(state, (84, 84))
     state = state / 255.0
     return einops.rearrange(state, "h w -> 1 h w")
-
-
-def epsilon_decay(frame_idx, epsilon_start, epsilon_end, epsilon_decay_duration):
-    return max(epsilon_end, epsilon_start - frame_idx / epsilon_decay_duration)
 
 
 class TargetNetworkUpdater:
@@ -68,3 +65,25 @@ def exponential_scheduler(
         return new_value.item()
 
     return scheduler
+
+
+def linearly_decaying_epsilon(decay_period, step, warmup_steps, epsilon):
+    """Returns the current epsilon for the agent's epsilon-greedy policy.
+
+    Args:
+        decay_period: float, the period over which epsilon is decayed.
+        step: int, the number of training steps completed so far.
+        warmup_steps: int, the number of steps taken before epsilon is decayed.
+        epsilon: float, the final value to which to decay the epsilon parameter.
+
+    Returns:
+        A float, the current epsilon value computed according to the schedule.
+    """
+    steps_left = decay_period + warmup_steps - step
+    bonus = (1.0 - epsilon) * steps_left / decay_period
+    bonus = np.clip(bonus, 0., 1. - epsilon)
+    return epsilon + bonus
+
+# Test the function
+epsilon_values = [linearly_decaying_epsilon(10000, i, 1000, 0.1) for i in range(0, 11000, 1000)]
+epsilon_values

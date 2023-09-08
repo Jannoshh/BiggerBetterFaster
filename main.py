@@ -1,5 +1,4 @@
 import random
-from dataclasses import dataclass
 from itertools import count
 
 import gymnasium as gym
@@ -9,9 +8,8 @@ from einops import einops
 from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
 from models import DQN
 from replay_buffer import ReplayBuffer
-from utils import preprocess_state, epsilon_decay, TargetNetworkUpdater, shrink_and_perturb_parameters, \
-    exponential_scheduler
-
+from utils import preprocess_state, TargetNetworkUpdater, shrink_and_perturb_parameters, \
+    exponential_scheduler, linearly_decaying_epsilon
 
 # Initialize configurations
 env_config = EnvironmentConfig()
@@ -84,7 +82,10 @@ while total_steps < train_config.num_steps:
     episode_reward = 0
 
     for episode_step in count():
-        epsilon = epsilon_decay(total_steps, train_config.epsilon_start, train_config.epsilon_end, train_config.epsilon_decay_last_frame)
+        epsilon = linearly_decaying_epsilon(decay_period=train_config.epsilon_decay_period,
+                                            step=total_steps,
+                                            warmup_steps=0,
+                                            epsilon=train_config.epsilon_train)
         action = select_epsilon_greedy_action(dqn, state, epsilon)
         next_state, reward, done, _, _ = env.step(action)
         next_state = preprocess_state(next_state)
@@ -101,7 +102,6 @@ while total_steps < train_config.num_steps:
             gradient_steps += 1
             if gradient_steps % train_config.reset_interval == 0:
                 shrink_and_perturb_parameters(dqn, train_config.alpha)
-
 
         ema_updater.soft_update()
 

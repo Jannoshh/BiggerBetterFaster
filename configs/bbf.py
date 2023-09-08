@@ -11,6 +11,7 @@ class EnvironmentConfig:
 @dataclass
 class NetworkConfig:
     buffer_size: int = 10000
+    min_replay_history = 2000  # TODO: figure out what this is
     batch_size: int = 32
     gamma: float = 0.99
     learning_rate: float = 1e-4
@@ -20,11 +21,9 @@ class NetworkConfig:
 
 @dataclass
 class TrainingConfig:
-    epsilon_start: float = 1.0
-    epsilon_end: float = 0.1
-    epsilon_decay: int = 10000
     num_steps: int = 100000
-    epsilon_decay_last_frame: int = 100000
+    epsilon_train: float = 0
+    epsilon_decay_period: int = 2001
     replay_ratio: int = 4
     perturbation_interval: int = 100
     reset_interval: int = 40000
