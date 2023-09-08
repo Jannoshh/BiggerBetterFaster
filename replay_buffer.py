@@ -1,6 +1,7 @@
 import random
 from collections import deque
 
+import numpy as np
 import torch
 
 
@@ -16,8 +17,8 @@ class ReplayBuffer:
 
         states, actions, rewards, next_states, dones = zip(*samples)
 
-        states = torch.FloatTensor(states)
-        next_states = torch.FloatTensor(next_states)
+        states = torch.FloatTensor(np.array(states))
+        next_states = torch.FloatTensor(np.array(next_states))
         actions = torch.LongTensor(actions)
         rewards = torch.FloatTensor(rewards)
         dones = torch.FloatTensor(dones)
