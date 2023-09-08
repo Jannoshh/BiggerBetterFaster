@@ -36,19 +36,19 @@ def shrink_and_perturb_parameters(model, alpha):
             param.data = phi
 
 
-def exponential_decay_scheduler(
-    decay_period, warmup_steps, initial_value, final_value
+def exponential_scheduler(
+    decay_period, initial_value, final_value, warmup_steps=0,
 ):
     """Instantiate a logarithmic schedule for a parameter.
 
     Args:
         decay_period: float, the period over which the value is decayed.
-        warmup_steps: int, the number of steps taken before decay starts.
         initial_value: float, the starting value for the parameter.
         final_value: float, the final value for the parameter.
+        warmup_steps: int, the number of steps taken before decay starts.
 
     Returns:
-        A decay function mapping step to parameter value.
+        A function mapping step to parameter value.
     """
 
     start = torch.log(torch.tensor(initial_value))
@@ -68,4 +68,3 @@ def exponential_decay_scheduler(
         return new_value.item()
 
     return scheduler
-

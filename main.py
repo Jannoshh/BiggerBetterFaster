@@ -10,7 +10,7 @@ from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
 from models import DQN
 from replay_buffer import ReplayBuffer
 from utils import preprocess_state, epsilon_decay, TargetNetworkUpdater, shrink_and_perturb_parameters, \
-    exponential_decay_scheduler
+    exponential_scheduler
 
 
 # Initialize configurations
@@ -45,10 +45,15 @@ ema_updater = TargetNetworkUpdater(dqn, target_dqn, net_config.tau)
 # Create the optimizer and the replay buffer
 optimizer = torch.optim.AdamW(params=dqn.parameters(), lr=net_config.learning_rate, weight_decay=net_config.weight_decay)
 replay_buffer = ReplayBuffer(capacity=net_config.buffer_size)
-update_horizon_scheduler = exponential_decay_scheduler(initial_value=10, final_value=3, decay_period=10000, warmup_steps=0)
+update_horizon_scheduler = exponential_scheduler(decay_period=train_config.cycle_steps,
+                                                 initial_value=train_config.max_update_horizon,
+                                                 final_value=train_config.min_update_horizon)
+gamma_scheduler = exponential_scheduler(decay_period=train_config.cycle_steps,
+                                        initial_value=train_config.min_gamma,
+                                        final_value=train_config.max_gamma)
 
 
-def optimize_model():
+def optimize_model(update_horizon, gamma):
     if len(replay_buffer) > net_config.batch_size:
         batch = replay_buffer.sample(net_config.batch_size)
         loss = compute_loss(batch)
@@ -91,8 +96,8 @@ while total_steps < train_config.num_steps:
 
         for _ in range(train_config.replay_ratio):
             gradient_steps_since_reset = gradient_steps % train_config.reset_interval
-            n_step_horizon = update_horizon_scheduler(gradient_steps_since_reset)
-            optimize_model()
+            optimize_model(update_horizon=update_horizon_scheduler(gradient_steps_since_reset),
+                           gamma=gamma_scheduler(gradient_steps_since_reset))
             gradient_steps += 1
             if gradient_steps % train_config.reset_interval == 0:
                 shrink_and_perturb_parameters(dqn, train_config.alpha)
