@@ -6,33 +6,12 @@ import gymnasium as gym
 import torch
 from einops import einops
 
+from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
 from models import DQN
 from replay_buffer import ReplayBuffer
-from utils import preprocess_state, epsilon_decay, TargetNetworkUpdater
+from utils import preprocess_state, epsilon_decay, TargetNetworkUpdater, shrink_and_perturb_parameters, \
+    exponential_decay_scheduler
 
-
-@dataclass
-class EnvironmentConfig:
-    env_name: str = 'ALE/BattleZone-v5'
-
-@dataclass
-class NetworkConfig:
-    buffer_size: int = 10000
-    batch_size: int = 32
-    gamma: float = 0.99
-    learning_rate: float = 1e-4
-    weight_decay: float = 0.1
-    tau: float = 0.005
-
-@dataclass
-class TrainingConfig:
-    epsilon_start: float = 1.0
-    epsilon_end: float = 0.1
-    epsilon_decay: int = 10000
-    num_steps: int = 100.000
-    target_update_interval: int = 1000
-    epsilon_decay_last_frame: int = 100000
-    replay_ratio: int = 4
 
 # Initialize configurations
 env_config = EnvironmentConfig()
@@ -46,7 +25,6 @@ n_actions = env.action_space.n
 sample_state, info = env.reset()
 sample_state_preprocessed = preprocess_state(sample_state)
 state_shape = sample_state_preprocessed.shape
-
 
 
 def select_epsilon_greedy_action(model, state, epsilon):
@@ -63,12 +41,12 @@ dqn = DQN(state_shape, n_actions).float()
 target_dqn = DQN(state_shape, n_actions).float()
 target_dqn.load_state_dict(dqn.state_dict())
 ema_updater = TargetNetworkUpdater(dqn, target_dqn, net_config.tau)
-optimizer = torch.optim.Adam(dqn.parameters(), lr=net_config.learning_rate)
-replay_buffer = ReplayBuffer(net_config.buffer_size)
 
 # Create the optimizer and the replay buffer
-optimizer = torch.optim.AdamW(dqn.parameters(), lr=net_config.learning_rate, weight_decay=net_config.weight_decay)
-replay_buffer = ReplayBuffer(net_config.buffer_size)
+optimizer = torch.optim.AdamW(params=dqn.parameters(), lr=net_config.learning_rate, weight_decay=net_config.weight_decay)
+replay_buffer = ReplayBuffer(capacity=net_config.buffer_size)
+update_horizon_scheduler = exponential_decay_scheduler(initial_value=10, final_value=3, decay_period=10000, warmup_steps=0)
+
 
 def optimize_model():
     if len(replay_buffer) > net_config.batch_size:
@@ -90,10 +68,10 @@ def compute_loss(batch):
     loss = ((current_q_values - target_q_values) ** 2).mean()
     return loss
 
+
 total_steps = 0
 gradient_steps = 0
 all_rewards = []
-episode_reward = 0
 
 while total_steps < train_config.num_steps:
     state, info = env.reset()  # Reset the environment
@@ -112,8 +90,13 @@ while total_steps < train_config.num_steps:
         total_steps += 1
 
         for _ in range(train_config.replay_ratio):
+            gradient_steps_since_reset = gradient_steps % train_config.reset_interval
+            n_step_horizon = update_horizon_scheduler(gradient_steps_since_reset)
             optimize_model()
             gradient_steps += 1
+            if gradient_steps % train_config.reset_interval == 0:
+                shrink_and_perturb_parameters(dqn, train_config.alpha)
+
 
         ema_updater.soft_update()
 
