@@ -3,13 +3,12 @@ from dataclasses import dataclass
 from itertools import count
 
 import gymnasium as gym
-import numpy as np
 import torch
 from einops import einops
 
 from models import DQN
 from replay_buffer import ReplayBuffer
-from utils import preprocess_state, epsilon_decay
+from utils import preprocess_state, epsilon_decay, TargetNetworkUpdater
 
 
 @dataclass
@@ -22,15 +21,18 @@ class NetworkConfig:
     batch_size: int = 32
     gamma: float = 0.99
     learning_rate: float = 1e-4
+    weight_decay: float = 0.1
+    tau: float = 0.005
 
 @dataclass
 class TrainingConfig:
     epsilon_start: float = 1.0
     epsilon_end: float = 0.1
     epsilon_decay: int = 10000
-    num_episodes: int = 1000
+    num_steps: int = 100.000
     target_update_interval: int = 1000
     epsilon_decay_last_frame: int = 100000
+    replay_ratio: int = 4
 
 # Initialize configurations
 env_config = EnvironmentConfig()
@@ -52,18 +54,20 @@ def select_epsilon_greedy_action(model, state, epsilon):
         return random.randint(0, n_actions - 1)
     else:
         state = einops.rearrange(torch.FloatTensor(state), 'c h w -> 1 c h w')
-        q_values = model(state)
+        q_values = target_dqn(state)
         return q_values.argmax(dim=1).item()
 
 
 # Initialize DQN and target DQN
 dqn = DQN(state_shape, n_actions).float()
 target_dqn = DQN(state_shape, n_actions).float()
+target_dqn.load_state_dict(dqn.state_dict())
+ema_updater = TargetNetworkUpdater(dqn, target_dqn, net_config.tau)
 optimizer = torch.optim.Adam(dqn.parameters(), lr=net_config.learning_rate)
 replay_buffer = ReplayBuffer(net_config.buffer_size)
 
 # Create the optimizer and the replay buffer
-optimizer = torch.optim.Adam(dqn.parameters(), lr=net_config.learning_rate)
+optimizer = torch.optim.AdamW(dqn.parameters(), lr=net_config.learning_rate, weight_decay=net_config.weight_decay)
 replay_buffer = ReplayBuffer(net_config.buffer_size)
 
 def optimize_model():
@@ -81,16 +85,17 @@ def compute_loss(batch):
     mask = 1 - dones
     current_q_values = dqn(states).gather(1, einops.rearrange(actions, 'b -> b 1'))
     next_q_values = target_dqn(next_states).max(1)[0]
-    target_q_values = rewards + net_config.gamma * next_q_values * mask.squeeze()
+    target_q_values = rewards + net_config.gamma * next_q_values * mask
 
     loss = ((current_q_values - target_q_values) ** 2).mean()
     return loss
 
 total_steps = 0
+gradient_steps = 0
 all_rewards = []
 episode_reward = 0
 
-for episode in range(train_config.num_episodes):
+while total_steps < train_config.num_steps:
     state, info = env.reset()  # Reset the environment
     state = preprocess_state(state)
     episode_reward = 0
@@ -106,16 +111,17 @@ for episode in range(train_config.num_episodes):
         episode_reward += reward
         total_steps += 1
 
-        optimize_model()
+        for _ in range(train_config.replay_ratio):
+            optimize_model()
+            gradient_steps += 1
 
-        if total_steps % train_config.target_update_interval == 0:
-            target_dqn.load_state_dict(dqn.state_dict())
+        ema_updater.soft_update()
 
-        if done:
+        if done or total_steps >= train_config.num_steps:
             break
 
     all_rewards.append(episode_reward)
-    print(f"Episode: {episode}, Reward: {episode_reward}")
+    print(f"Total Steps: {total_steps}, Last Episode Reward: {episode_reward}")
 
 print("Training completed!")
 
