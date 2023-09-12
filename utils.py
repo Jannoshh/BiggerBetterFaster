@@ -23,16 +23,6 @@ class TargetNetworkUpdater:
             target_param.data.copy_(self.tau * source_param.data + (1.0 - self.tau) * target_param.data)
 
 
-def shrink_and_perturb_parameters(model, alpha):
-    for name, param in model.named_parameters():
-        if 'encoder' in name:  # Assuming 'encoder' is part of the name for encoder layers
-            phi = torch.randn_like(param).normal_(0, 0.01)  # Assuming a normal initializer with mean 0 and std 0.01
-            param.data = alpha * param.data + (1 - alpha) * phi
-        elif 'final' in name:
-            phi = torch.randn_like(param).normal_(0, 0.01)  # Assuming a normal initializer with mean 0 and std 0.01
-            param.data = phi
-
-
 def exponential_scheduler(
     decay_period, initial_value, final_value, warmup_steps=0,
 ):
