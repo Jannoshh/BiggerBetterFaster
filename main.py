@@ -23,7 +23,7 @@ class BBFAgent(torch.nn.Module):
         self.train_config = TrainingConfig()
 
         # Environment setup
-        self.env = gym.make(self.env_config.env_name)
+        self.env = gym.make(self.env_config.env_name, obs_type='grayscale')
         self.n_actions = self.env.action_space.n
         sample_state, _ = self.env.reset()
         sample_state = preprocess_state(sample_state)
@@ -65,6 +65,7 @@ class BBFAgent(torch.nn.Module):
             return random.randint(0, self.n_actions - 1)
         else:
             state = einops.rearrange(state, 'c h w -> 1 c h w')
+            state = torch.from_numpy(state).float()
             q_values = self.target_network(state)
             return q_values.argmax(dim=1).item()
 

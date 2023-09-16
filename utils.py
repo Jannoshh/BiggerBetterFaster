@@ -5,7 +5,10 @@ import torch
 
 def preprocess_state(state):
     state = state / 255.0
-    return einops.rearrange(state, "h w c -> c h w")
+    if len(state.shape) == 3:
+        return einops.rearrange(state, "h w c -> c h w")
+    else:
+        return einops.rearrange(state, "h w -> 1 h w")
 
 
 class TargetNetworkUpdater:
