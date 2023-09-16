@@ -3,6 +3,7 @@ from itertools import count
 
 import gymnasium as gym
 import torch
+import wandb
 from einops import einops
 
 from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
@@ -82,56 +83,63 @@ class BBFAgent(torch.nn.Module):
         next_q_values = self.target_network(next_states).max(1)[0]
         target_q_values = rewards + gamma * next_q_values * mask
         loss = ((current_q_values - target_q_values) ** 2).mean()
+        wandb.log({"loss": loss})
         return loss
 
-    def train(self):
-        total_steps = 0
+    def train(self, project_name="bbf", run_name=None, disable_wandb=False):
+        wandb.init(
+            project=project_name,
+            mode="disabled" if disable_wandb else "online",
+            name=run_name,
+        )
+
         gradient_steps = 0
         all_rewards = []
 
-        while total_steps < self.train_config.num_steps:
-            state, _ = self.env.reset()
-            state = preprocess_state(state)
-            episode_reward = 0
+        state, _ = self.env.reset()
+        state = preprocess_state(state)
+        episode_reward = 0
 
-            for episode_step in count():
-                epsilon = linearly_decaying_epsilon(
-                    decay_period=self.train_config.epsilon_decay_period,
-                    step=total_steps,
-                    warmup_steps=0,
-                    epsilon=self.train_config.epsilon_train
+        for step in range(self.train_config.num_steps):
+            epsilon = linearly_decaying_epsilon(
+                decay_period=self.train_config.epsilon_decay_period,
+                step=step,
+                warmup_steps=0,
+                epsilon=self.train_config.epsilon_train
+            )
+            action = self.select_epsilon_greedy_action(state, epsilon)
+            next_state, reward, done, _, _ = self.env.step(action)
+            next_state = preprocess_state(next_state)
+            self.replay_buffer.push(state, action, reward, next_state, done)
+
+            state = next_state
+            episode_reward += reward
+
+            for _ in range(self.train_config.replay_ratio):
+                gradient_steps_since_reset = gradient_steps % self.train_config.reset_interval
+                self.optimize_model(
+                    update_horizon=self.update_horizon_scheduler(gradient_steps_since_reset),
+                    gamma=self.gamma_scheduler(gradient_steps_since_reset)
                 )
-                action = self.select_epsilon_greedy_action(state, epsilon)
-                next_state, reward, done, _, _ = self.env.step(action)
-                next_state = preprocess_state(next_state)
-                self.replay_buffer.push(state, action, reward, next_state, done)
+                gradient_steps += 1
+                if gradient_steps % self.train_config.reset_interval == 0:
+                    self.shrink_and_perturb_parameters()
 
-                state = next_state
-                episode_reward += reward
-                total_steps += 1
+            self.ema_updater.soft_update()
 
-                for _ in range(self.train_config.replay_ratio):
-                    gradient_steps_since_reset = gradient_steps % self.train_config.reset_interval
-                    self.optimize_model(
-                        update_horizon=self.update_horizon_scheduler(gradient_steps_since_reset),
-                        gamma=self.gamma_scheduler(gradient_steps_since_reset)
-                    )
-                    gradient_steps += 1
-                    if gradient_steps % self.train_config.reset_interval == 0:
-                        self.shrink_and_perturb_parameters()
+            if done:
+                all_rewards.append(episode_reward)
+                print(f"Total Steps: {step}, Last Episode Reward: {episode_reward}")
+                wandb.log({"episode_reward": episode_reward, "total_steps": step})
+                state, _ = self.env.reset()
+                state = preprocess_state(state)
+                episode_reward = 0
 
-                self.ema_updater.soft_update()
-
-                if done or total_steps >= self.train_config.num_steps:
-                    break
-
-            all_rewards.append(episode_reward)
-            print(f"Total Steps: {total_steps}, Last Episode Reward: {episode_reward}")
-
+        wandb.finish()
         print("Training completed!")
 
 
 # Instantiating the agent
 agent = BBFAgent()
-agent.train()
+agent.train(disable_wandb=True)
 
