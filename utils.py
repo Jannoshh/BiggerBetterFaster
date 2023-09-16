@@ -4,10 +4,12 @@ import numpy as np
 import torch
 
 
-def preprocess_state(state):
+def preprocess_state(state, resize=None, grey_scale=True):
     # Convert state image to grayscale, resize and normalize
-    state = cv2.cvtColor(state, cv2.COLOR_RGB2GRAY)
-    state = cv2.resize(state, (84, 84))
+    if grey_scale:
+        state = cv2.cvtColor(state, cv2.COLOR_RGB2GRAY)
+    if resize:
+        state = cv2.resize(state, (84, 84))
     state = state / 255.0
     return einops.rearrange(state, "h w -> 1 h w")
 

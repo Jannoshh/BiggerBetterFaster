@@ -6,14 +6,14 @@ import torch
 from einops import einops
 
 from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
-from models import DQN
+from models import DQN, ImpalaCNN
 from replay_buffer import ReplayBuffer
 from utils import preprocess_state, TargetNetworkUpdater, \
     exponential_scheduler, linearly_decaying_epsilon
 
 
 class BBFAgent(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, network=DQN):
         super(BBFAgent, self).__init__()
 
         # Store configurations
@@ -24,17 +24,16 @@ class BBFAgent(torch.nn.Module):
         # Environment setup
         self.env = gym.make(self.env_config.env_name)
         self.n_actions = self.env.action_space.n
-        sample_state, _ = self.env.reset()
-        self.state_shape = preprocess_state(sample_state).shape
 
         # Networks
-        self.dqn = DQN(self.state_shape, self.n_actions).float()
-        self.target_dqn = DQN(self.state_shape, self.n_actions).float()
-        self.target_dqn.load_state_dict(self.dqn.state_dict())
-        self.ema_updater = TargetNetworkUpdater(self.dqn, self.target_dqn, self.net_config.tau)
+
+        self.network = network()
+        self.target_network = network()
+        self.target_network.load_state_dict(self.network.state_dict())
+        self.ema_updater = TargetNetworkUpdater(self.network, self.target_network, self.net_config.tau)
 
         # Optimizer and Replay Buffer
-        self.optimizer = torch.optim.AdamW(params=self.dqn.parameters(),
+        self.optimizer = torch.optim.AdamW(params=self.network.parameters(),
                                            lr=self.net_config.learning_rate,
                                            weight_decay=self.net_config.weight_decay)
         self.replay_buffer = ReplayBuffer(capacity=self.net_config.buffer_size)
@@ -65,7 +64,7 @@ class BBFAgent(torch.nn.Module):
             return random.randint(0, self.n_actions - 1)
         else:
             state = einops.rearrange(state, 'c h w -> 1 c h w')
-            q_values = self.target_dqn(state)
+            q_values = self.target_network(state)
             return q_values.argmax(dim=1).item()
 
     def optimize_model(self, update_horizon, gamma):
@@ -79,8 +78,8 @@ class BBFAgent(torch.nn.Module):
     def compute_loss(self, batch, update_horizon, gamma):
         states, actions, rewards, next_states, dones = batch
         mask = 1 - dones
-        current_q_values = self.dqn(states).gather(1, einops.rearrange(actions, 'b -> b 1'))
-        next_q_values = self.target_dqn(next_states).max(1)[0]
+        current_q_values = self.network(states).gather(1, einops.rearrange(actions, 'b -> b 1'))
+        next_q_values = self.target_network(next_states).max(1)[0]
         target_q_values = rewards + gamma * next_q_values * mask
         loss = ((current_q_values - target_q_values) ** 2).mean()
         return loss
