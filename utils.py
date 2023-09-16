@@ -1,10 +1,13 @@
+import cv2
 import einops
 import numpy as np
 import torch
 
 
-def preprocess_state(state):
+def preprocess_state(state, resize=True):
     state = state / 255.0
+    if resize:
+        state = cv2.resize(state, (84, 84))
     if len(state.shape) == 3:
         return einops.rearrange(state, "h w c -> c h w")
     else:
