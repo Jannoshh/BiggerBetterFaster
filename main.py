@@ -24,21 +24,20 @@ class BBFAgent(torch.nn.Module):
         # Environment setup
         self.env = gym.make(self.env_config.env_name)
         self.n_actions = self.env.action_space.n
+        sample_state, _ = self.env.reset()
+        sample_state = preprocess_state(sample_state)
 
         # Networks
-
-        self.network = network()
-        self.target_network = network()
+        self.network = network(sample_state.shape, self.n_actions)
+        self.target_network = network(sample_state.shape, self.n_actions)
         self.target_network.load_state_dict(self.network.state_dict())
         self.ema_updater = TargetNetworkUpdater(self.network, self.target_network, self.net_config.tau)
 
-        # Optimizer and Replay Buffer
         self.optimizer = torch.optim.AdamW(params=self.network.parameters(),
                                            lr=self.net_config.learning_rate,
                                            weight_decay=self.net_config.weight_decay)
         self.replay_buffer = ReplayBuffer(capacity=self.net_config.buffer_size)
 
-        # Schedulers
         self.update_horizon_scheduler = exponential_scheduler(
             decay_period=self.train_config.cycle_steps,
             initial_value=self.train_config.max_update_horizon,
@@ -51,13 +50,14 @@ class BBFAgent(torch.nn.Module):
         )
 
     def shrink_and_perturb_parameters(self):
-        for name, param in self.model.named_parameters():
-            if 'encoder' in name:  # Assuming 'encoder' is part of the name for encoder layers
-                phi = torch.randn_like(param).normal_(0, 0.01)  # Assuming a normal initializer with mean 0 and std 0.01
-                param.data = self.train_config.alpha * param.data + (1 - self.train_config.alpha) * phi
-            elif 'final' in name:
-                phi = torch.randn_like(param).normal_(0, 0.01)  # Assuming a normal initializer with mean 0 and std 0.01
-                param.data = phi
+        return
+        # for name, param in self.model.named_parameters():
+        #     if 'encoder' in name:  # Assuming 'encoder' is part of the name for encoder layers
+        #         phi = torch.randn_like(param).normal_(0, 0.01)  # Assuming a normal initializer with mean 0 and std 0.01
+        #         param.data = self.train_config.alpha * param.data + (1 - self.train_config.alpha) * phi
+        #     elif 'final' in name:
+        #         phi = torch.randn_like(param).normal_(0, 0.01)  # Assuming a normal initializer with mean 0 and std 0.01
+        #         param.data = phi
 
     def select_epsilon_greedy_action(self, state, epsilon):
         if random.random() < epsilon:

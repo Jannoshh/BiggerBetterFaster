@@ -5,23 +5,23 @@ import torch.nn as nn
 
 
 class DQN(nn.Module):
-    def __init__(self, n_actions):
+    def __init__(self, state_shape, n_actions):
         super(DQN, self).__init__()
-        in_dim = 1
+        channels = state_shape[0]
         self.conv = nn.Sequential(
-            nn.Conv2d(in_dim, 32, kernel_size=8, stride=4),
+            nn.Conv2d(channels, 32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU()
         )
-        conv_out_size = self._get_conv_out(input_shape)
+        conv_out_size = self._get_conv_out(state_shape)
         self.fc = nn.Linear(conv_out_size, n_actions)
 
     def _get_conv_out(self, shape):
-        o = self.conv(torch.zeros(1, *shape))
-        return int(np.prod(o.size()))
+        out = self.conv(torch.zeros(1, *shape))
+        return int(np.prod(out.size()))
 
     def forward(self, x):
         conv = self.conv(x)
@@ -112,11 +112,8 @@ class ResidualStage(nn.Module):
         return x
 
 
-
-
-
-# Example usage
-model = ImpalaCNN()
-x = torch.randn(1, 1, 84, 84)  # Example input
-output = model(x)
-print(output.shape)
+if __name__ == '__main__':
+    model = ImpalaCNN()
+    x = torch.randn(1, 1, 84, 84)  # Example input
+    output = model(x)
+    print(output.shape)

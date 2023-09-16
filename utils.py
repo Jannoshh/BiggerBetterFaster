@@ -1,17 +1,11 @@
-import cv2
 import einops
 import numpy as np
 import torch
 
 
-def preprocess_state(state, resize=None, grey_scale=True):
-    # Convert state image to grayscale, resize and normalize
-    if grey_scale:
-        state = cv2.cvtColor(state, cv2.COLOR_RGB2GRAY)
-    if resize:
-        state = cv2.resize(state, (84, 84))
+def preprocess_state(state):
     state = state / 255.0
-    return einops.rearrange(state, "h w -> 1 h w")
+    return einops.rearrange(state, "h w c -> c h w")
 
 
 class TargetNetworkUpdater:
