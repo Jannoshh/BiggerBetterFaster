@@ -3,12 +3,10 @@ import random
 import gymnasium as gym
 import numpy as np
 import torch
-from gymnasium.wrappers import FrameStack, GrayScaleObservation, ResizeObservation, TransformReward, \
-    TransformObservation
+from einops import einops
+from gymnasium.wrappers import TransformObservation, AtariPreprocessing, FrameStack
 
 import wandb
-from einops import einops
-
 from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
 from models import DQN
 from replay_buffer import ReplayBuffer
@@ -26,11 +24,10 @@ class BBFAgent(torch.nn.Module):
         self.train_config = TrainingConfig()
 
         # Environment setup
-        env = gym.make(self.env_config.env_name)
-        env = GrayScaleObservation(env)
-        env = ResizeObservation(env, shape=(84, 84))
-        env = TransformObservation(env, lambda obs: obs / 255)
-        env = FrameStack(env, num_stack=self.train_config.frames_stack)
+        env = gym.make(self.env_config.env_name, frameskip=1)
+        env = AtariPreprocessing(env, frame_skip=self.train_config.action_repeat, grayscale_obs=True,
+                                 screen_size=84, scale_obs=True, terminal_on_life_loss=True)
+        env = FrameStack(env, self.train_config.frames_stack)
         self.env = env
         self.n_actions = self.env.action_space.n
         sample_state, _ = self.env.reset()
@@ -88,7 +85,7 @@ class BBFAgent(torch.nn.Module):
     def compute_loss(self, batch, update_horizon, gamma):
         states, actions, rewards, next_states, dones = batch
         mask = 1 - dones
-        current_q_values = self.network(states).gather(1, einops.rearrange(actions, 'b -> b 1'))
+        current_q_values = self.network(states).gather(1, actions.unsqueeze(-1))
         next_q_values = self.target_network(next_states).max(-1)[0]
         target_q_values = torch.sign(rewards) + gamma * next_q_values * mask
         loss = torch.nn.functional.huber_loss(current_q_values, target_q_values.unsqueeze(-1), delta=1.0)
@@ -114,17 +111,11 @@ class BBFAgent(torch.nn.Module):
                 epsilon=self.train_config.epsilon_train
             )
             action = self.select_epsilon_greedy_action(state, epsilon)
-            accumulated_reward = 0
-            for _ in range(self.train_config.action_repeat):
-                next_state, reward, done, _, _ = self.env.step(action)
-                accumulated_reward += reward
-                if done:
-                    break
-
-            self.replay_buffer.push(state, action, accumulated_reward, next_state, done)
+            next_state, reward, done, _, _ = self.env.step(action)
+            self.replay_buffer.push(state, action, reward, next_state, done)
 
             state = next_state
-            episode_reward += accumulated_reward
+            episode_reward += reward
 
             if len(self.replay_buffer) > self.network_config.min_replay_history:
                 for _ in range(self.train_config.replay_ratio):
