@@ -1,15 +1,18 @@
 import random
-from itertools import count
 
 import gymnasium as gym
+import numpy as np
 import torch
+from gymnasium.wrappers import FrameStack, GrayScaleObservation, ResizeObservation, TransformReward, \
+    TransformObservation
+
 import wandb
 from einops import einops
 
 from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
-from models import DQN, ImpalaCNN
+from models import DQN
 from replay_buffer import ReplayBuffer
-from utils import preprocess_state, TargetNetworkUpdater, \
+from utils import TargetNetworkUpdater, \
     exponential_scheduler, linearly_decaying_epsilon
 
 
@@ -19,25 +22,30 @@ class BBFAgent(torch.nn.Module):
 
         # Store configurations
         self.env_config = EnvironmentConfig()
-        self.net_config = NetworkConfig()
+        self.network_config = NetworkConfig()
         self.train_config = TrainingConfig()
 
         # Environment setup
-        self.env = gym.make(self.env_config.env_name, obs_type='grayscale')
+        env = gym.make(self.env_config.env_name)
+        env = GrayScaleObservation(env)
+        env = ResizeObservation(env, shape=(84, 84))
+        env = TransformObservation(env, lambda obs: obs / 255)
+        env = FrameStack(env, num_stack=self.train_config.frames_stack)
+        # env = TransformObservation(env, lambda obs: einops.rearrange(np.array(obs), "f h w c -> (c f) h w"))
+        self.env = env
         self.n_actions = self.env.action_space.n
         sample_state, _ = self.env.reset()
-        sample_state = preprocess_state(sample_state)
 
         # Networks
         self.network = network(sample_state.shape, self.n_actions)
         self.target_network = network(sample_state.shape, self.n_actions)
         self.target_network.load_state_dict(self.network.state_dict())
-        self.ema_updater = TargetNetworkUpdater(self.network, self.target_network, self.net_config.tau)
+        self.ema_updater = TargetNetworkUpdater(self.network, self.target_network, self.network_config.tau)
 
         self.optimizer = torch.optim.AdamW(params=self.network.parameters(),
-                                           lr=self.net_config.learning_rate,
-                                           weight_decay=self.net_config.weight_decay)
-        self.replay_buffer = ReplayBuffer(capacity=self.net_config.buffer_size)
+                                           lr=self.network_config.learning_rate,
+                                           weight_decay=self.network_config.weight_decay)
+        self.replay_buffer = ReplayBuffer(capacity=self.network_config.buffer_size)
 
         self.update_horizon_scheduler = exponential_scheduler(
             decay_period=self.train_config.cycle_steps,
@@ -49,6 +57,8 @@ class BBFAgent(torch.nn.Module):
             initial_value=self.train_config.min_gamma,
             final_value=self.train_config.max_gamma
         )
+
+        self.gradient_steps = 0
 
     def shrink_and_perturb_parameters(self):
         return
@@ -64,27 +74,25 @@ class BBFAgent(torch.nn.Module):
         if random.random() < epsilon:
             return random.randint(0, self.n_actions - 1)
         else:
+            state = torch.tensor(np.array(state), dtype=torch.float32)
             state = einops.rearrange(state, 'c h w -> 1 c h w')
-            state = torch.from_numpy(state).float()
             q_values = self.target_network(state)
             return q_values.argmax(dim=1).item()
 
     def optimize_model(self, update_horizon, gamma):
-        if len(self.replay_buffer) > self.net_config.batch_size:
-            batch = self.replay_buffer.sample(self.net_config.batch_size)
-            loss = self.compute_loss(batch, update_horizon, gamma)
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+        batch = self.replay_buffer.sample(self.network_config.batch_size)
+        loss = self.compute_loss(batch, update_horizon, gamma)
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
     def compute_loss(self, batch, update_horizon, gamma):
         states, actions, rewards, next_states, dones = batch
         mask = 1 - dones
         current_q_values = self.network(states).gather(1, einops.rearrange(actions, 'b -> b 1'))
         next_q_values = self.target_network(next_states).max(1)[0]
-        target_q_values = rewards + gamma * next_q_values * mask
+        target_q_values = torch.sign(rewards) + gamma * next_q_values * mask
         loss = ((current_q_values - target_q_values) ** 2).mean()
-        wandb.log({"loss": loss})
         return loss
 
     def train(self, project_name="bbf", run_name=None, disable_wandb=False):
@@ -94,37 +102,34 @@ class BBFAgent(torch.nn.Module):
             name=run_name,
         )
 
-        gradient_steps = 0
         all_rewards = []
 
         state, _ = self.env.reset()
-        state = preprocess_state(state)
         episode_reward = 0
 
         for step in range(self.train_config.num_steps):
             epsilon = linearly_decaying_epsilon(
                 decay_period=self.train_config.epsilon_decay_period,
                 step=step,
-                warmup_steps=0,
+                warmup_steps=self.network_config.min_replay_history,
                 epsilon=self.train_config.epsilon_train
             )
             action = self.select_epsilon_greedy_action(state, epsilon)
-            next_state, reward, done, _, _ = self.env.step(action)
-            next_state = preprocess_state(next_state)
-            self.replay_buffer.push(state, action, reward, next_state, done)
+            accumulated_reward = 0
+            for _ in range(self.train_config.action_repeat):
+                next_state, reward, done, _, _ = self.env.step(action)
+                accumulated_reward += reward
+                if done:
+                    break
+
+            self.replay_buffer.push(state, action, accumulated_reward, next_state, done)
 
             state = next_state
-            episode_reward += reward
+            episode_reward += accumulated_reward
 
-            for _ in range(self.train_config.replay_ratio):
-                gradient_steps_since_reset = gradient_steps % self.train_config.reset_interval
-                self.optimize_model(
-                    update_horizon=self.update_horizon_scheduler(gradient_steps_since_reset),
-                    gamma=self.gamma_scheduler(gradient_steps_since_reset)
-                )
-                gradient_steps += 1
-                if gradient_steps % self.train_config.reset_interval == 0:
-                    self.shrink_and_perturb_parameters()
+            if len(self.replay_buffer) > self.network_config.min_replay_history:
+                for _ in range(self.train_config.replay_ratio):
+                    self.train_step()
 
             self.ema_updater.soft_update()
 
@@ -133,14 +138,21 @@ class BBFAgent(torch.nn.Module):
                 print(f"Total Steps: {step}, Last Episode Reward: {episode_reward}")
                 wandb.log({"episode_reward": episode_reward, "total_steps": step})
                 state, _ = self.env.reset()
-                state = preprocess_state(state)
                 episode_reward = 0
 
         wandb.finish()
         print("Training completed!")
 
+    def train_step(self):
+        gradient_steps_since_reset = self.gradient_steps % self.train_config.reset_interval
+        self.optimize_model(
+            update_horizon=self.update_horizon_scheduler(gradient_steps_since_reset),
+            gamma=self.gamma_scheduler(gradient_steps_since_reset)
+        )
+        self.gradient_steps += 1
+        if self.gradient_steps % self.train_config.reset_interval == 0:
+            self.shrink_and_perturb_parameters()
 
-# Instantiating the agent
+
 agent = BBFAgent()
 agent.train(disable_wandb=True)
-

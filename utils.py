@@ -4,16 +4,6 @@ import numpy as np
 import torch
 
 
-def preprocess_state(state, resize=True):
-    state = state / 255.0
-    if resize:
-        state = cv2.resize(state, (84, 84))
-    if len(state.shape) == 3:
-        return einops.rearrange(state, "h w c -> c h w")
-    else:
-        return einops.rearrange(state, "h w -> 1 h w")
-
-
 class TargetNetworkUpdater:
     def __init__(self, source_network, target_network, tau):
         self.source_network = source_network

@@ -4,14 +4,14 @@ from dataclasses import dataclass
 @dataclass
 class EnvironmentConfig:
     env_name: str = 'ALE/BattleZone-v5'
-    wandb_project: str | None = "day1-demotransformer"
+    wandb_project: str | None = "bbf"
     wandb_name: str | None = None
 
 
 @dataclass
 class NetworkConfig:
     buffer_size: int = 10000
-    min_replay_history = 2000  # TODO: figure out what this is
+    min_replay_history = 2000
     batch_size: int = 32
     gamma: float = 0.99
     learning_rate: float = 1e-4
@@ -24,7 +24,9 @@ class TrainingConfig:
     num_steps: int = 100000
     epsilon_train: float = 0
     epsilon_decay_period: int = 2001
-    replay_ratio: int = 4
+    replay_ratio: int = 1
+    frames_stack: int = 4
+    action_repeat: int = 4
     perturbation_interval: int = 100
     reset_interval: int = 40000
     alpha: float = 0.5
