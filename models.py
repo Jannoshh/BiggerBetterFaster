@@ -1,32 +1,39 @@
-import einops
-import numpy as np
 import torch
 import torch.nn as nn
 from einops.layers.torch import Rearrange
 
+
 class DQN(nn.Module):
-    def __init__(self, state_shape, n_actions):
+    def __init__(self, state_shape, n_actions, channels=[32, 64, 64], kernel_sizes=[8, 4, 3], strides=[4, 2, 1],
+                 hidden_units=512):
         super(DQN, self).__init__()
-        channels = state_shape[0]
-        self.cnn_encoder = nn.Sequential(
-            nn.Conv2d(channels, 32, kernel_size=8, stride=4),
+
+        self.encoder = nn.Sequential(
+            nn.Conv2d(state_shape[0], channels[0], kernel_size=kernel_sizes[0], stride=strides[0]),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.Conv2d(channels[0], channels[1], kernel_size=kernel_sizes[1], stride=strides[1]),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.Conv2d(channels[1], channels[2], kernel_size=kernel_sizes[2], stride=strides[2]),
             nn.ReLU(),
             Rearrange('b c h w -> b (c h w)'),
         )
-        conv_out_size = self._get_conv_out(state_shape)
-        self.fc = nn.Linear(conv_out_size, n_actions)
 
-    def _get_conv_out(self, shape):
-        out = self.cnn_encoder(torch.zeros(1, *shape))
+        flattened_dim = self._get_flattened_dim(state_shape)
+
+        self.q_learning_head = nn.Sequential(
+            nn.Linear(flattened_dim, hidden_units),
+            nn.ReLU(),
+            nn.Linear(hidden_units, n_actions),
+        )
+
+    def _get_flattened_dim(self, shape):
+        out = self.encoder(torch.zeros(1, *shape))
         return out.shape[-1]
 
-    def forward(self, x):
-        x = self.cnn_encoder(x)
-        return self.fc(x)
+    def forward(self, state):
+        latent = self.encoder(state)
+        q_values = self.q_learning_head(latent)
+        return q_values
 
 
 class ImpalaCNN(nn.Module):
