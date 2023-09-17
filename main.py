@@ -31,7 +31,6 @@ class BBFAgent(torch.nn.Module):
         env = ResizeObservation(env, shape=(84, 84))
         env = TransformObservation(env, lambda obs: obs / 255)
         env = FrameStack(env, num_stack=self.train_config.frames_stack)
-        # env = TransformObservation(env, lambda obs: einops.rearrange(np.array(obs), "f h w c -> (c f) h w"))
         self.env = env
         self.n_actions = self.env.action_space.n
         sample_state, _ = self.env.reset()
@@ -90,9 +89,9 @@ class BBFAgent(torch.nn.Module):
         states, actions, rewards, next_states, dones = batch
         mask = 1 - dones
         current_q_values = self.network(states).gather(1, einops.rearrange(actions, 'b -> b 1'))
-        next_q_values = self.target_network(next_states).max(1)[0]
+        next_q_values = self.target_network(next_states).max(-1)[0]
         target_q_values = torch.sign(rewards) + gamma * next_q_values * mask
-        loss = ((current_q_values - target_q_values) ** 2).mean()
+        loss = torch.nn.functional.huber_loss(current_q_values, target_q_values.unsqueeze(-1), delta=1.0)
         return loss
 
     def train(self, project_name="bbf", run_name=None, disable_wandb=False):
