@@ -2,30 +2,30 @@ import einops
 import numpy as np
 import torch
 import torch.nn as nn
-
+from einops.layers.torch import Rearrange
 
 class DQN(nn.Module):
     def __init__(self, state_shape, n_actions):
         super(DQN, self).__init__()
         channels = state_shape[0]
-        self.conv = nn.Sequential(
+        self.cnn_encoder = nn.Sequential(
             nn.Conv2d(channels, 32, kernel_size=8, stride=4),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
             nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
-            nn.ReLU()
+            nn.ReLU(),
+            Rearrange('b c h w -> b (c h w)'),
         )
         conv_out_size = self._get_conv_out(state_shape)
         self.fc = nn.Linear(conv_out_size, n_actions)
 
     def _get_conv_out(self, shape):
-        out = self.conv(torch.zeros(1, *shape))
-        return int(np.prod(out.size()))
+        out = self.cnn_encoder(torch.zeros(1, *shape))
+        return out.shape[-1]
 
     def forward(self, x):
-        conv = self.conv(x)
-        x = einops.rearrange(conv, 'b c h w -> b (c h w)')
+        x = self.cnn_encoder(x)
         return self.fc(x)
 
 
