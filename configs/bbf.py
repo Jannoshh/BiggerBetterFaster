@@ -17,6 +17,7 @@ class NetworkConfig:
     learning_rate: float = 1e-4
     weight_decay: float = 0.1
     tau: float = 0.005
+    max_gradient_norm: float = 10.0
 
 
 @dataclass

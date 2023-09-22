@@ -4,7 +4,7 @@ import gymnasium as gym
 import numpy as np
 import torch
 from einops import einops
-from gymnasium.wrappers import TransformObservation, AtariPreprocessing, FrameStack
+from gymnasium.wrappers import AtariPreprocessing, FrameStack
 
 import wandb
 from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
@@ -75,13 +75,6 @@ class BBFAgent(torch.nn.Module):
             q_values = self.target_network(state)
             return q_values.argmax(dim=1).item()
 
-    def optimize_model(self, update_horizon, gamma):
-        batch = self.replay_buffer.sample(self.network_config.batch_size)
-        loss = self.compute_loss(batch, update_horizon, gamma)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
     def compute_loss(self, batch, update_horizon, gamma):
         states, actions, rewards, next_states, dones = batch
         mask = 1 - dones
@@ -135,10 +128,14 @@ class BBFAgent(torch.nn.Module):
 
     def train_step(self):
         gradient_steps_since_reset = self.gradient_steps % self.train_config.reset_interval
-        self.optimize_model(
-            update_horizon=self.update_horizon_scheduler(gradient_steps_since_reset),
-            gamma=self.gamma_scheduler(gradient_steps_since_reset)
-        )
+        batch = self.replay_buffer.sample(self.network_config.batch_size)
+        loss = self.compute_loss(batch=batch,
+                                 update_horizon=self.update_horizon_scheduler(gradient_steps_since_reset),
+                                 gamma=self.gamma_scheduler(gradient_steps_since_reset))
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.network_config.max_gradient_norm)
+        self.optimizer.step()
         self.gradient_steps += 1
         if self.gradient_steps % self.train_config.reset_interval == 0:
             self.shrink_and_perturb_parameters()
