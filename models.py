@@ -55,8 +55,8 @@ class DQN(nn.Module):
         out = self.encoder(torch.zeros(1, *shape))
         return out.shape[-1]
 
-    def forward(self, state: Float[Tensor, 'batch c h w']) -> Float[Tensor, 'batch n_actions n_atoms']:
-        latent = self.encoder(state)
+    def forward(self, states: Float[Tensor, 'batch c h w']) -> Float[Tensor, 'envs batch n_actions n_atoms']:
+        latent = self.encoder(states / 255.0)
         latent = self.fc(latent)
         if self.dueling:
             value = self.value_stream(latent)
