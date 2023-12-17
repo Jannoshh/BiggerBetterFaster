@@ -1,20 +1,65 @@
 import random
+from dataclasses import dataclass
 
 import gymnasium as gym
+import hydra
 import numpy as np
 import torch
+import wandb
 from einops import einops
+from hydra.core.config_store import ConfigStore
 from jaxtyping import Float
 from stable_baselines3.common.atari_wrappers import NoopResetEnv, MaxAndSkipEnv, EpisodicLifeEnv, FireResetEnv, ClipRewardEnv
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
 from torch import Tensor
-
-import wandb
-from configs.bbf import EnvironmentConfig, NetworkConfig, TrainingConfig
 from models import DQN
 from stable_baselines3.common.buffers import ReplayBuffer
 from utils import TargetNetworkUpdater, \
     exponential_scheduler, linearly_decaying_epsilon
+
+
+@dataclass
+class Config:
+    seed: int = 1
+    torch_deterministic: bool = True
+
+    env_name: str = 'ALE/Pong-v5'
+    n_envs: int = 1
+
+    wandb_project: str | None = "bbf"
+    wandb_name: str | None = None
+
+    buffer_size: int = 100000
+    min_replay_history: int = 2000
+    batch_size: int = 32
+    learning_rate: float = 1e-4
+    weight_decay: float = 0.1
+    tau: float = 0.005
+    max_gradient_norm: float = 10.0
+
+    distributional: bool = False
+    v_min: int = -10
+    v_max: int = 10
+    n_atoms: int = 51
+
+    dueling: bool = False
+
+    num_steps: int = 100000
+    epsilon_train: float = 0
+    epsilon_decay_period: int = 2001
+    replay_ratio: int = 1
+    perturbation_interval: int = 100
+    reset_interval: int = 40000
+    alpha: float = 0.5
+    min_update_horizon: int = 3
+    max_update_horizon: int = 10
+    min_gamma: float = 0.97
+    max_gamma: float = 0.997
+    cycle_steps: int = 10000
+
+
+cs = ConfigStore.instance()
+cs.store(name="config", node=Config)
 
 
 def make_env(env_id, seed, idx, capture_video=False, run_name=None):
@@ -90,60 +135,44 @@ def project_distribution(
 
 
 class BBFAgent(torch.nn.Module):
-    def __init__(self,
-                 network=DQN,
-                 v_min=-10,
-                 v_max=10,
-                 n_atoms=51
-                 ):
+    def __init__(self, cfg):
         super(BBFAgent, self).__init__()
 
-        self.v_min = v_min
-        self.v_max = v_max
-        self.support = torch.linspace(self.v_min, self.v_max, n_atoms)
-        self.n_atoms = n_atoms
+        self.cfg = cfg
+        self.support = torch.linspace(self.cfg.v_min, self.cfg.v_max, self.cfg.n_atoms)
 
-        # Store configurations
-        self.env_config = EnvironmentConfig()
-        self.network_config = NetworkConfig()
-        self.train_config = TrainingConfig()
-
-        seed = 0
         # Environment setup
         self.envs = gym.vector.SyncVectorEnv(
-            [make_env(self.env_config.env_name, seed + i, i, False) for i in range(1)]
+            [make_env(self.cfg.env_name, self.cfg.seed + i, i, False) for i in range(self.cfg.n_envs)]
         )
         self.n_actions = self.envs.single_action_space.n
-        sample_observations, _ = self.envs.reset()
 
         # Networks
-        observation_shape = sample_observations.shape[1:]
-        self.online_network = network(observation_shape, self.n_actions, self.n_atoms)
-        self.target_network = network(observation_shape, self.n_actions, self.n_atoms)
+        self.online_network = DQN(self.n_actions, self.cfg.n_atoms, dueling=self.cfg.dueling, distributional=self.cfg.distributional)
+        self.target_network = DQN(self.n_actions, self.cfg.n_atoms, dueling=self.cfg.dueling, distributional=self.cfg.distributional)
         self.target_network.load_state_dict(self.online_network.state_dict())
-        self.ema_updater = TargetNetworkUpdater(self.online_network, self.target_network, self.network_config.tau)
+        self.ema_updater = TargetNetworkUpdater(self.online_network, self.target_network, self.cfg.tau)
 
         self.optimizer = torch.optim.AdamW(params=self.online_network.parameters(),
-                                           lr=self.network_config.learning_rate,
-                                           weight_decay=self.network_config.weight_decay)
+                                           lr=self.cfg.learning_rate,
+                                           weight_decay=self.cfg.weight_decay)
         self.replay_buffer = ReplayBuffer(
-            buffer_size=self.network_config.buffer_size,
+            buffer_size=self.cfg.buffer_size,
             observation_space=self.envs.single_observation_space,
             action_space=self.envs.single_action_space,
             device='cpu',
             optimize_memory_usage=True,
             handle_timeout_termination=False,
         )
-
         self.update_horizon_scheduler = exponential_scheduler(
-            decay_period=self.train_config.cycle_steps,
-            initial_value=self.train_config.max_update_horizon,
-            final_value=self.train_config.min_update_horizon
+            decay_period=self.cfg.cycle_steps,
+            initial_value=self.cfg.max_update_horizon,
+            final_value=self.cfg.min_update_horizon
         )
         self.gamma_scheduler = exponential_scheduler(
-            decay_period=self.train_config.cycle_steps,
-            initial_value=self.train_config.min_gamma,
-            final_value=self.train_config.max_gamma
+            decay_period=self.cfg.cycle_steps,
+            initial_value=self.cfg.min_gamma,
+            final_value=self.cfg.max_gamma
         )
 
         self.gradient_steps = 0
@@ -160,16 +189,19 @@ class BBFAgent(torch.nn.Module):
 
     def select_epsilon_greedy_action(
             self,
-            observations: Float[Tensor, 'batch c h w'],
+            observations: Float[Tensor, 'envs c h w'],
             epsilon: float,
     ) -> np.array:
         if random.random() < epsilon:
             return np.array([self.envs.single_action_space.sample() for _ in range(self.envs.num_envs)])
         else:
-            observations = torch.tensor(np.array(observations), dtype=torch.float32)
-            action_probs = self.target_network(observations)
-            q_values = einops.einsum(action_probs, self.support, 'envs n_actions n_atoms, n_atoms -> envs n_actions')
-            return q_values.argmax(dim=-1).numpy()
+            observations = torch.tensor(observations, dtype=torch.float32)
+            if self.cfg.distributional:
+                action_probs = self.target_network(observations)
+                q_values = einops.einsum(action_probs, self.support, 'envs n_actions n_atoms, n_atoms -> envs n_actions')
+            else:
+                q_values = self.target_network(observations)
+            return q_values.argmax(dim=-1).cpu().numpy()
 
     @torch.no_grad()
     def compute_target(
@@ -178,9 +210,8 @@ class BBFAgent(torch.nn.Module):
             rewards: Float[Tensor, 'batch'],
             dones: Float[Tensor, 'batch'],
             gamma: int,
-            distributional: bool,
     ) -> Float[Tensor, 'batch n_atoms']:
-        if distributional:
+        if self.cfg.distributional:
             probabilities = self.target_network(next_observations)
             q_values = einops.einsum(probabilities, self.support, 'batch n_actions n_atoms, n_atoms -> batch n_actions')
             best_actions = torch.argmax(q_values, dim=-1)
@@ -191,7 +222,7 @@ class BBFAgent(torch.nn.Module):
             target_support = rewards + gamma * support * (1 - dones)
             target = project_distribution(next_probabilities, target_support, self.support)
         else:
-            next_q_values = self.target_network(next_observations).max(-1)[0]
+            next_q_values = self.target_network(next_observations).max(-1)[0].unsqueeze(-1)
             target = rewards + gamma * next_q_values * (1 - dones)
         return target
 
@@ -203,14 +234,13 @@ class BBFAgent(torch.nn.Module):
     ):
         batch_size = batch.observations.shape[0]
 
-        target = self.compute_target(batch.next_observations, batch.rewards, batch.dones, gamma, distributional=True)
+        target = self.compute_target(batch.next_observations, batch.rewards, batch.dones, gamma)
 
-        distributional = True
-        if distributional:
+        if self.cfg.distributional:
             probabilities = self.online_network(batch.observations)[torch.arange(batch_size), batch.actions.squeeze()]
             loss = torch.nn.functional.cross_entropy(probabilities, target)
         else:
-            q_values = self.online_network(batch.observations)[torch.arange(batch_size), batch.actions.squeeze()]
+            q_values = self.online_network(batch.observations)[torch.arange(batch_size), batch.actions.squeeze()].unsqueeze(-1)
             loss = torch.nn.functional.huber_loss(q_values, target, delta=1.0)
         return loss
 
@@ -223,12 +253,12 @@ class BBFAgent(torch.nn.Module):
 
         observations, _ = self.envs.reset()
 
-        for step in range(self.train_config.num_steps):
+        for step in range(self.cfg.num_steps):
             epsilon = linearly_decaying_epsilon(
-                decay_period=self.train_config.epsilon_decay_period,
+                decay_period=self.cfg.epsilon_decay_period,
                 step=step,
-                warmup_steps=self.network_config.min_replay_history,
-                epsilon=self.train_config.epsilon_train
+                warmup_steps=self.cfg.min_replay_history,
+                epsilon=self.cfg.epsilon_train
             )
             actions = self.select_epsilon_greedy_action(observations, epsilon)
             next_observations, rewards, dones, _, infos = self.envs.step(actions)
@@ -243,8 +273,8 @@ class BBFAgent(torch.nn.Module):
 
             observations = next_observations
 
-            if step > self.network_config.min_replay_history:
-                for _ in range(self.train_config.replay_ratio):
+            if step > self.cfg.min_replay_history:
+                for _ in range(self.cfg.replay_ratio):
                     self.train_step()
 
             self.ema_updater.soft_update()
@@ -253,8 +283,8 @@ class BBFAgent(torch.nn.Module):
         print("Training completed!")
 
     def train_step(self):
-        gradient_steps_since_reset = self.gradient_steps % self.train_config.reset_interval
-        batch = self.replay_buffer.sample(self.network_config.batch_size)
+        gradient_steps_since_reset = self.gradient_steps % self.cfg.reset_interval
+        batch = self.replay_buffer.sample(self.cfg.batch_size)
         loss = self.compute_loss(
             batch=batch,
             update_horizon=self.update_horizon_scheduler(gradient_steps_since_reset),
@@ -262,20 +292,26 @@ class BBFAgent(torch.nn.Module):
         )
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.online_network.parameters(), self.network_config.max_gradient_norm)
+        torch.nn.utils.clip_grad_norm_(self.online_network.parameters(), self.cfg.max_gradient_norm)
         self.optimizer.step()
         self.gradient_steps += 1
 
         if self.gradient_steps % 100 == 0:
             wandb.log({"loss": loss.item(), "gradient_steps": self.gradient_steps})
-        if self.gradient_steps % self.train_config.reset_interval == 0:
+        if self.gradient_steps % self.cfg.reset_interval == 0:
             self.shrink_and_perturb_parameters()
 
 
-if __name__ == '__main__':
-    # random.seed(args.seed)
-    # np.random.seed(args.seed)
-    # torch.manual_seed(args.seed)
-    # torch.backends.cudnn.deterministic = args.torch_deterministic
-    agent = BBFAgent()
+@hydra.main(version_base=None, config_name="config")
+def main(cfg: Config):
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    torch.manual_seed(cfg.seed)
+    torch.backends.cudnn.deterministic = cfg.torch_deterministic
+
+    agent = BBFAgent(cfg)
     agent.train(disable_wandb=True)
+
+
+if __name__ == '__main__':
+    main()

@@ -8,21 +8,21 @@ from torch import Tensor
 
 class DQN(nn.Module):
     def __init__(self,
-                 state_shape,
                  n_actions,
                  n_atoms,
                  dropout=0.0,
-                 hidden_units=512,
-                 dueling=True,
+                 dueling=False,
+                 distributional=False,
                  ):
         super(DQN, self).__init__()
 
         self.n_actions = n_actions
-        self.n_atoms = n_atoms
+        self.n_atoms = n_atoms if distributional else 1
         self.dueling = dueling
+        self.distributional = distributional
 
         self.encoder = nn.Sequential(
-            nn.Conv2d(state_shape[0], 32, kernel_size=8, stride=4),
+            nn.Conv2d(4, 32, kernel_size=8, stride=4),
             nn.Dropout2d(dropout),
             nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2),
@@ -34,22 +34,20 @@ class DQN(nn.Module):
             Rearrange('b c h w -> b (c h w)'),
         )
 
-        flattened_dim = self._get_flattened_dim(state_shape)
-
         self.fc = nn.Sequential(
-            nn.Linear(flattened_dim, hidden_units),
+            nn.Linear(3136, 512),
             nn.ReLU(),
         )
 
         if self.dueling:
             self.value_stream = nn.Sequential(
-                nn.Linear(hidden_units, n_atoms),
+                nn.Linear(512, self.n_atoms),
             )
             self.advantage_stream = nn.Sequential(
-                nn.Linear(hidden_units, n_actions * n_atoms),
+                nn.Linear(512, n_actions * self.n_atoms),
             )
         else:
-            self.advantage_stream = nn.Linear(hidden_units, n_actions * n_atoms)
+            self.advantage_stream = nn.Linear(512, n_actions * self.n_atoms)
 
     def _get_flattened_dim(self, shape):
         out = self.encoder(torch.zeros(1, *shape))
@@ -65,10 +63,15 @@ class DQN(nn.Module):
             advantage = einops.rearrange(advantage, 'b (n_actions n_atoms) -> b n_actions n_atoms', n_actions=self.n_actions)
             logits = value + advantage - einops.reduce(advantage, 'b n_actions n_atoms -> b 1 n_atoms', reduction='mean')
         else:
-            logits = self.advantage(latent)
+            logits = self.advantage_stream(latent)
             logits = einops.rearrange(logits, 'b (n_actions n_atoms) -> b n_actions n_atoms', n_actions=self.n_actions)
-        probabilities = torch.softmax(logits, dim=-1)
-        return probabilities
+
+        if self.distributional:
+            probabilities = torch.softmax(logits, dim=-1)
+            return probabilities
+        else:
+            q_values = logits.squeeze(-1)
+            return q_values
 
 
 class ImpalaCNN(nn.Module):
