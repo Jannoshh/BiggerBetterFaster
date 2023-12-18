@@ -66,6 +66,7 @@ def linearly_decaying_epsilon(decay_period, step, warmup_steps, epsilon):
     bonus = np.clip(bonus, 0., 1. - epsilon)
     return epsilon + bonus
 
-# Test the function
-epsilon_values = [linearly_decaying_epsilon(10000, i, 1000, 0.1) for i in range(0, 11000, 1000)]
-epsilon_values
+
+if __name__ == "__main__":
+    epsilon_values = [linearly_decaying_epsilon(10000, i, 1000, 0.1) for i in range(0, 11000, 1000)]
+    print(epsilon_values)
