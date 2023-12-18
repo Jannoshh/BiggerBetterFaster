@@ -5,7 +5,6 @@ Put on hold for now.
 Currently supports Q-learning on Atari with DQN.
 
 #### TODO:
-- Distributional Q-learning
 - n-step Q-learning
 - Impala CNN
 - Shrink and perturb
