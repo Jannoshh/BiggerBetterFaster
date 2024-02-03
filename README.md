@@ -2,7 +2,7 @@ Replicating [Bigger, Better, Faster: Human-level Atari with human-level efficien
 
 Put on hold for now.
 
-Currently supports Q-learning on Atari with DQN.
+Currently supports Q-learning on Atari with DQN and C51.
 
 #### TODO:
 - n-step Q-learning
